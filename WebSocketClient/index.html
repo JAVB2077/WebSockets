@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Examen - Paquetes</title>
+  <style>
+    body { font-family: sans-serif; max-width: 480px; margin: 40px auto; padding: 0 16px; }
+    ul { list-style: none; padding: 0; }
+    li { margin: 10px 0; }
+    a { display: block; padding: 12px; border: 1px solid #ccc; border-radius: 6px; text-decoration: none; color: #1a4fa0; }
+    a:hover { background: #f0f4fb; }
+    #estadoConexion { display: inline-block; padding: 4px 10px; border-radius: 12px; color: #fff; background: #c0392b; }
+    #estadoConexion.conectado { background: #27ae60; }
+  </style>
+</head>
+<body>
+  <h1>Examen - Paquetes</h1>
+
+  <p>WebSocket: <span id="estadoConexion">Desconectado</span></p>
+
+  <ul>
+    <li><a href="registro.html">Registro de paquetes</a></li>
+    <li><a href="estados.html">Estados de paquetes</a></li>
+    <li><a href="mapa.html">Mapa</a></li>
+  </ul>
+
+  <script src="signalr.js"></script>
+  <script src="conexion.js"></script>
+  <script>
+    // conexion.js actualiza solo el indicador #estadoConexion
+    iniciarConexion();
+  </script>
+</body>
+</html>

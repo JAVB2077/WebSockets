@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Registro de paquetes</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 16px; max-width: 1100px; margin-inline: auto; }
+    header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header h1 { margin: 0; font-size: 1.5rem; flex: 1; }
+    #estadoConexion { padding: 4px 10px; border-radius: 12px; color: #fff; background: #c0392b; }
+    #estadoConexion.conectado { background: #27ae60; }
+    .contenido { display: grid; grid-template-columns: 320px 1fr; gap: 16px; margin-top: 16px; }
+    form { display: flex; flex-direction: column; gap: 12px; }
+    label { display: flex; flex-direction: column; gap: 4px; font-weight: bold; }
+    input, button { font: inherit; padding: 8px; }
+    .dato { font-weight: normal; font-family: monospace; padding: 8px; background: #f3f3f3; border-radius: 4px; }
+    button { cursor: pointer; }
+    #btnEnviar { background: #1a4fa0; color: #fff; border: none; border-radius: 4px; }
+    #btnEnviar:disabled { background: #999; cursor: not-allowed; }
+    #mensaje { min-height: 1.5em; }
+    #mensaje.error { color: #c0392b; }
+    #mensaje.ok { color: #1e8449; }
+    #map { height: 520px; border-radius: 6px; }
+    @media (max-width: 760px) {
+      .contenido { grid-template-columns: 1fr; }
+      #map { height: 380px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="index.html">← Inicio</a>
+    <h1>Registro de paquetes</h1>
+    <span id="estadoConexion">Desconectado</span>
+  </header>
+
+  <div class="contenido">
+    <form id="formulario">
+      <label>
+        Origen (tu ubicación)
+        <span class="dato" id="txtOrigen">Sin obtener</span>
+      </label>
+      <button type="button" id="btnUbicacion">Obtener mi ubicación</button>
+
+      <label>
+        Destino (da clic en el mapa)
+        <span class="dato" id="txtDestino">Sin elegir</span>
+      </label>
+
+      <label>
+        Precio
+        <input type="number" id="precio" min="0.01" step="0.01" placeholder="0.00" required>
+      </label>
+
+      <label>
+        Tipo de paquete
+        <input type="text" id="tipoPaquete" list="tipos" placeholder="Ej. Caja mediana" required>
+        <datalist id="tipos">
+          <option value="Sobre">
+          <option value="Caja chica">
+          <option value="Caja mediana">
+          <option value="Caja grande">
+          <option value="Frágil">
+        </datalist>
+      </label>
+
+      <button type="submit" id="btnEnviar" disabled>Enviar</button>
+      <p id="mensaje" role="status" aria-live="polite"></p>
+    </form>
+
+    <div id="map"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="signalr.js"></script>
+  <script src="conexion.js"></script>
+  <script>
+    //#region Variables y mapa
+    const txtOrigen = document.getElementById("txtOrigen");
+    const txtDestino = document.getElementById("txtDestino");
+    const inputPrecio = document.getElementById("precio");
+    const inputTipo = document.getElementById("tipoPaquete");
+    const btnUbicacion = document.getElementById("btnUbicacion");
+    const btnEnviar = document.getElementById("btnEnviar");
+    const mensaje = document.getElementById("mensaje");
+
+    let origen = null;   // { lat, lng }
+    let destino = null;  // { lat, lng }
+    let pinOrigen = null;
+    let pinDestino = null;
+
+    // Vista inicial: México
+    const mapa = L.map("map").setView([23.6345, -102.5528], 5);
+    capaOsm().addTo(mapa);
+    //#endregion
+
+    //#region Origen con geolocalización (botón)
+    function ObtenerUbicacion() {
+      if (!navigator.geolocation) {
+        mostrarMensaje("Navegador no compatible con geolocalización", true);
+        return;
+      }
+      txtOrigen.textContent = "Obteniendo...";
+      navigator.geolocation.getCurrentPosition(GeoSucces, GeoError, { enableHighAccuracy: true, timeout: 10000 });
+    }
+
+    // Hubo permisos: ponemos el pin de origen con su leyenda fija
+    function GeoSucces(posicion) {
+      origen = { lat: posicion.coords.latitude, lng: posicion.coords.longitude };
+      txtOrigen.textContent = textoPunto(origen);
+
+      if (pinOrigen) mapa.removeLayer(pinOrigen);
+      pinOrigen = L.marker([origen.lat, origen.lng])
+        .addTo(mapa)
+        .bindTooltip("Origen", { permanent: true, direction: "top", offset: [-15, -12] });
+
+      mapa.setView([origen.lat, origen.lng], 14);
+      mostrarMensaje("");
+      revisarFormulario();
+    }
+
+    function GeoError(e) {
+      const errores = {
+        [e.PERMISSION_DENIED]: "Permiso denegado",
+        [e.POSITION_UNAVAILABLE]: "Ubicación no disponible",
+        [e.TIMEOUT]: "Tiempo de espera agotado"
+      };
+      txtOrigen.textContent = "Sin obtener";
+      mostrarMensaje(errores[e.code] ?? "Error desconocido", true);
+    }
+    //#endregion
+
+    //#region Destino con clic en el mapa (se reposiciona en cada clic)
+    mapa.on("click", e => {
+      destino = { lat: e.latlng.lat, lng: e.latlng.lng };
+      txtDestino.textContent = textoPunto(destino);
+
+      if (pinDestino) {
+        pinDestino.setLatLng(e.latlng);
+      } else {
+        pinDestino = L.marker(e.latlng)
+          .addTo(mapa)
+          .bindTooltip("Destino", { permanent: true, direction: "top", offset: [-15, -12] });
+      }
+      revisarFormulario();
+    });
+    //#endregion
+
+    //#region Envío
+    // El botón solo se activa con conexión, origen y destino
+    function revisarFormulario() {
+      const conectado = connection.state === signalR.HubConnectionState.Connected;
+      btnEnviar.disabled = !(conectado && origen && destino);
+    }
+
+    function mostrarMensaje(texto, esError = false) {
+      mensaje.textContent = texto;
+      mensaje.className = esError ? "error" : "ok";
+    }
+
+    document.getElementById("formulario").addEventListener("submit", async e => {
+      e.preventDefault();
+      const precio = parseFloat(inputPrecio.value);
+      const tipoPaquete = inputTipo.value.trim();
+
+      if (!(precio > 0)) return mostrarMensaje("Escribe un precio mayor a 0", true);
+      if (!tipoPaquete) return mostrarMensaje("Escribe el tipo de paquete", true);
+
+      btnEnviar.disabled = true;
+      try {
+        // El servidor le pone Id y fecha, avisa a todos y nos lo regresa
+        const paquete = await connection.invoke("RegistrarPaquete", { origen, destino, precio, tipoPaquete });
+        guardarPaquete(paquete);
+        mostrarMensaje(`Paquete ${paquete.id} enviado`);
+      } catch (err) {
+        console.error(err);
+        mostrarMensaje(`No se pudo enviar: ${err.message}`, true);
+      } finally {
+        revisarFormulario();
+      }
+    });
+    //#endregion
+
+    //#region Eventos
+    btnUbicacion.addEventListener("click", () => ObtenerUbicacion());
+    window.addEventListener("conexion", revisarFormulario);
+    iniciarConexion();
+    //#endregion
+  </script>
+</body>
+</html>

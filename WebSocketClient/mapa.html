@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mapa de paquetes</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 16px; max-width: 1100px; margin-inline: auto; }
+    header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header h1 { margin: 0; font-size: 1.5rem; flex: 1; }
+    #estadoConexion { padding: 4px 10px; border-radius: 12px; color: #fff; background: #c0392b; }
+    #estadoConexion.conectado { background: #27ae60; }
+    .opciones { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 16px 0; }
+    select, button { font: inherit; padding: 6px 10px; }
+    #map { height: calc(100vh - 150px); min-height: 360px; border-radius: 6px; }
+    #resumen { color: #555; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="index.html">← Inicio</a>
+    <h1>Mapa de paquetes</h1>
+    <span id="estadoConexion">Desconectado</span>
+  </header>
+
+  <div class="opciones">
+    <label for="filtro">Mostrar:</label>
+    <select id="filtro">
+      <option value="">Todos los paquetes</option>
+    </select>
+    <button type="button" id="btnCentrar">Centrar</button>
+    <span id="resumen"></span>
+  </div>
+
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="signalr.js"></script>
+  <script src="conexion.js"></script>
+  <script>
+    //#region Variables y mapa
+    const selectFiltro = document.getElementById("filtro");
+    const resumen = document.getElementById("resumen");
+
+    const mapa = L.map("map").setView([23.6345, -102.5528], 5);
+    capaOsm().addTo(mapa);
+
+    // Todo lo que se dibuja va en esta capa para poder limpiarla y redibujar
+    const capaPaquetes = L.layerGroup().addTo(mapa);
+
+    // Un color por paquete para distinguir sus recorridos
+    const colores = ["#1a4fa0", "#c0392b", "#1e8449", "#8e44ad", "#d35400", "#16a085", "#2c3e50", "#b7950b"];
+    //#endregion
+
+    //#region Dibujo
+    // Dibuja origen y destino (pines con leyenda), paradas (círculos) y la línea del recorrido
+    function dibujarPaquete(paquete, color) {
+      const id = escaparHtml(paquete.id);
+      const puntos = [];
+
+      if (paquete.origen) {
+        L.marker([paquete.origen.lat, paquete.origen.lng]).addTo(capaPaquetes)
+          .bindTooltip(`Origen<br>${id}`, { permanent: true, direction: "top", offset: [-15, -12] })
+          .bindPopup(`<b>${id}</b><br>Tipo: ${escaparHtml(paquete.tipoPaquete)}<br>Origen: ${textoPunto(paquete.origen)}`);
+        puntos.push([paquete.origen.lat, paquete.origen.lng]);
+      }
+
+      if (paquete.destino) {
+        L.marker([paquete.destino.lat, paquete.destino.lng]).addTo(capaPaquetes)
+          .bindTooltip(`Destino<br>${id}`, { permanent: true, direction: "top", offset: [-15, -12] })
+          .bindPopup(`<b>${id}</b><br>Destino: ${textoPunto(paquete.destino)}`);
+        puntos.push([paquete.destino.lat, paquete.destino.lng]);
+      }
+
+      // Recorrido real: origen (parada 0) y cada parada registrada en estados.html
+      const recorrido = paquete.paradas.map(p => [p.ubicacion.lat, p.ubicacion.lng]);
+      paquete.paradas.filter(p => p.parada > 0).forEach(p => {
+        L.circleMarker([p.ubicacion.lat, p.ubicacion.lng], { radius: 6, color, fillColor: color, fillOpacity: 0.9 })
+          .addTo(capaPaquetes)
+          .bindTooltip(`${id} · ${p.estado === "Entregado" ? "Entregado" : `Parada ${p.parada}`}`)
+          .bindPopup(`<b>${id}</b><br>${escaparHtml(p.estado)} (parada ${p.parada})<br>${textoPunto(p.ubicacion)}<br>${new Date(p.fecha).toLocaleString()}`);
+        puntos.push([p.ubicacion.lat, p.ubicacion.lng]);
+      });
+      if (recorrido.length > 1) {
+        L.polyline(recorrido, { color, weight: 4 }).addTo(capaPaquetes);
+      }
+
+      // Lo que falta para llegar: línea punteada del último punto al destino
+      const ultima = paquete.paradas.at(-1);
+      if (ultima && ultima.estado !== "Entregado" && paquete.destino) {
+        L.polyline([[ultima.ubicacion.lat, ultima.ubicacion.lng], [paquete.destino.lat, paquete.destino.lng]],
+          { color, weight: 2, dashArray: "6 8", opacity: 0.6 }).addTo(capaPaquetes);
+      }
+
+      return puntos;
+    }
+
+    // Redibuja todo según el filtro; devuelve los puntos visibles para centrar
+    function pintarMapa() {
+      const paquetes = listaPaquetes();
+      actualizarFiltro(paquetes);
+
+      capaPaquetes.clearLayers();
+      const puntos = [];
+      let entregados = 0;
+      paquetes.forEach((paquete, i) => {
+        if (paquete.paradas.at(-1)?.estado === "Entregado") entregados++;
+        if (selectFiltro.value && selectFiltro.value !== paquete.id) return;
+        puntos.push(...dibujarPaquete(paquete, colores[i % colores.length]));
+      });
+
+      resumen.textContent = paquetes.length
+        ? `${paquetes.length} paquete(s), ${entregados} entregado(s)`
+        : "Aún no hay paquetes registrados";
+      return puntos;
+    }
+
+    function centrar(puntos) {
+      if (puntos.length > 1) mapa.fitBounds(puntos, { padding: [40, 40] });
+      else if (puntos.length === 1) mapa.setView(puntos[0], 14);
+    }
+
+    // Mantiene las opciones del combo al día sin perder la selección
+    function actualizarFiltro(paquetes) {
+      const seleccion = selectFiltro.value;
+      selectFiltro.length = 1;
+      paquetes.forEach(p => selectFiltro.add(new Option(p.id, p.id)));
+      selectFiltro.value = paquetes.some(p => p.id === seleccion) ? seleccion : "";
+    }
+    //#endregion
+
+    //#region Mensajes del servidor
+    // Paquete nuevo: se dibuja y se centra el mapa para verlo
+    connection.on("PaqueteRegistrado", paquete => {
+      guardarPaquete(paquete);
+      centrar(pintarMapa());
+    });
+
+    // Cada parada nueva se dibuja y el mapa se mueve hacia ella
+    connection.on("EstadoActualizado", actualizacion => {
+      guardarActualizacion(actualizacion);
+      pintarMapa();
+      if (!selectFiltro.value || selectFiltro.value === actualizacion.paqueteId) {
+        mapa.panTo([actualizacion.ubicacion.lat, actualizacion.ubicacion.lng]);
+      }
+    });
+    //#endregion
+
+    //#region Eventos
+    selectFiltro.addEventListener("change", () => centrar(pintarMapa()));
+    document.getElementById("btnCentrar").addEventListener("click", () => centrar(pintarMapa()));
+
+    // Otra pestaña de este navegador cambió el historial
+    window.addEventListener("storage", e => {
+      if (e.key === CLAVE_HISTORIAL || e.key === null) pintarMapa();
+    });
+
+    centrar(pintarMapa());
+    iniciarConexion();
+    //#endregion
+  </script>
+</body>
+</html>

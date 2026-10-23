@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Estados de paquetes</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 16px; max-width: 1100px; margin-inline: auto; }
+    header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    header h1 { margin: 0; font-size: 1.5rem; flex: 1; }
+    #estadoConexion { padding: 4px 10px; border-radius: 12px; color: #fff; background: #c0392b; }
+    #estadoConexion.conectado { background: #27ae60; }
+    .opciones { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 16px 0; }
+    select, button { font: inherit; padding: 6px 10px; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; }
+    .tabla { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px; border-bottom: 1px solid #ddd; text-align: left; white-space: nowrap; }
+    th { background: #1a4fa0; color: #fff; }
+    tr.par td { background: #f5f7fb; }
+    td.num { font-variant-numeric: tabular-nums; }
+    .coord { display: block; font-size: 0.8em; color: #666; font-family: monospace; }
+    .entregado { color: #1e8449; font-weight: bold; }
+    .btnModificar { background: #1a4fa0; color: #fff; border: none; border-radius: 4px; }
+    .btnModificar:disabled { background: #ccc; color: #777; }
+    #vacio { color: #666; }
+    #btnBorrar { margin-top: 24px; background: none; border: 1px solid #c0392b; color: #c0392b; border-radius: 4px; }
+
+    /* Ventana emergente con el mapa */
+    dialog { width: min(900px, calc(100vw - 32px)); padding: 16px; border: none; border-radius: 8px; }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+    dialog h2 { margin: 0 0 8px; font-size: 1.2rem; }
+    #mapaModal { height: min(60vh, 480px); border-radius: 6px; }
+    .acciones { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 12px; }
+    #btnGuardarParada { background: #1a4fa0; color: #fff; border: none; border-radius: 4px; }
+    #btnLlegada { background: #1e8449; color: #fff; border: none; border-radius: 4px; }
+    #btnGuardarParada:disabled, #btnLlegada:disabled { background: #999; }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="index.html">← Inicio</a>
+    <h1>Historial de estados</h1>
+    <span id="estadoConexion">Desconectado</span>
+  </header>
+
+  <!-- Opción global: abrir el mapa o mandar directo al destino -->
+  <div class="opciones">
+    <label for="modo">Al pulsar "Modificar":</label>
+    <select id="modo">
+      <option value="mapa">Abrir mapa para marcar parada</option>
+      <option value="destino">Marcar llegada a destino (sin mapa)</option>
+    </select>
+  </div>
+
+  <div class="tabla">
+    <table>
+      <thead>
+        <tr>
+          <th>Número de paquete</th>
+          <th>Origen</th>
+          <th>Costo</th>
+          <th>Estado</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="cuerpo"></tbody>
+    </table>
+  </div>
+  <p id="vacio">Aún no hay paquetes. Registra uno en <a href="registro.html">registro.html</a>.</p>
+
+  <button type="button" id="btnBorrar">Borrar historial de este navegador</button>
+
+  <dialog id="dialogo">
+    <h2 id="tituloModal"></h2>
+    <p>Da clic en el mapa donde va el paquete. Si ya llegó, usa "Llegó a destino".</p>
+    <div id="mapaModal"></div>
+    <div class="acciones">
+      <button type="button" id="btnCancelar">Cancelar</button>
+      <button type="button" id="btnLlegada">Llegó a destino</button>
+      <button type="button" id="btnGuardarParada" disabled>Guardar parada</button>
+    </div>
+  </dialog>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="signalr.js"></script>
+  <script src="conexion.js"></script>
+  <script>
+    //#region Variables
+    const cuerpo = document.getElementById("cuerpo");
+    const vacio = document.getElementById("vacio");
+    const selectModo = document.getElementById("modo");
+    const dialogo = document.getElementById("dialogo");
+    const tituloModal = document.getElementById("tituloModal");
+    const btnGuardarParada = document.getElementById("btnGuardarParada");
+    const btnLlegada = document.getElementById("btnLlegada");
+
+    const moneda = new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" });
+    const CLAVE_MODO = "examen.modoModificar";
+
+    let paqueteActual = null;  // paquete que se está modificando en la ventana
+    let puntoNuevo = null;     // { lat, lng } elegido en el mapa de la ventana
+    let marcaNueva = null;     // marcador (círculo) del punto nuevo
+    let mapaModal = null;      // se crea la primera vez que se abre la ventana
+    const capaModal = L.layerGroup();
+    //#endregion
+
+    //#region Tabla
+    function textoEstado(parada) {
+      if (parada.estado === "En tránsito") return `En tránsito (parada ${parada.parada})`;
+      return parada.estado;
+    }
+
+    // Una fila por cada estado; solo la última fila de cada paquete (si no ha llegado) tiene el botón activo
+    function pintarTabla() {
+      const paquetes = listaPaquetes();
+      cuerpo.innerHTML = "";
+      vacio.hidden = paquetes.length > 0;
+
+      paquetes.forEach((paquete, i) => {
+        const entregado = paquete.paradas.at(-1)?.estado === "Entregado";
+
+        paquete.paradas.forEach((parada, j) => {
+          const esUltima = j === paquete.paradas.length - 1;
+          const fila = document.createElement("tr");
+          if (i % 2 === 1) fila.className = "par";
+
+          const celdaId = document.createElement("td");
+          celdaId.textContent = paquete.id;
+
+          const celdaOrigen = document.createElement("td");
+          celdaOrigen.className = "num";
+          celdaOrigen.textContent = textoPunto(paquete.origen);
+
+          const celdaCosto = document.createElement("td");
+          celdaCosto.className = "num";
+          celdaCosto.textContent = paquete.precio != null ? moneda.format(paquete.precio) : "—";
+
+          const celdaEstado = document.createElement("td");
+          celdaEstado.textContent = textoEstado(parada);
+          if (parada.estado === "Entregado") celdaEstado.className = "entregado";
+          const coord = document.createElement("span");
+          coord.className = "coord";
+          coord.textContent = textoPunto(parada.ubicacion);
+          celdaEstado.appendChild(coord);
+
+          const celdaBoton = document.createElement("td");
+          if (!(esUltima && entregado)) {
+            const boton = document.createElement("button");
+            boton.type = "button";
+            boton.className = "btnModificar";
+            boton.textContent = "Modificar";
+            boton.dataset.id = paquete.id;
+            // Las filas anteriores quedan anuladas
+            boton.disabled = !esUltima;
+            celdaBoton.appendChild(boton);
+          }
+
+          fila.append(celdaId, celdaOrigen, celdaCosto, celdaEstado, celdaBoton);
+          cuerpo.appendChild(fila);
+        });
+      });
+    }
+    //#endregion
+
+    //#region Enviar actualización
+    // La siguiente parada es la última + 1; el servidor la reenvía a todos (incluidos nosotros)
+    async function enviarActualizacion(paquete, ubicacion, estado) {
+      const ultima = paquete.paradas.at(-1);
+      await connection.invoke("ActualizarEstado", {
+        paqueteId: paquete.id,
+        parada: (ultima?.parada ?? 0) + 1,
+        ubicacion,
+        estado
+      });
+    }
+
+    async function marcarLlegada(paquete) {
+      try {
+        await enviarActualizacion(paquete, paquete.destino, "Entregado");
+        return true;
+      } catch (err) {
+        console.error(err);
+        alert(`No se pudo actualizar: ${err.message}`);
+        return false;
+      }
+    }
+    //#endregion
+
+    //#region Ventana emergente con mapa
+    function abrirModal(paquete) {
+      paqueteActual = paquete;
+      puntoNuevo = null;
+      marcaNueva = null;
+      btnGuardarParada.disabled = true;
+      btnLlegada.disabled = !paquete.destino;
+      tituloModal.textContent = `Actualizar ${paquete.id}`;
+      dialogo.showModal();
+
+      // Leaflet necesita que el contenedor sea visible para medirlo
+      if (!mapaModal) {
+        mapaModal = L.map("mapaModal");
+        capaOsm().addTo(mapaModal);
+        capaModal.addTo(mapaModal);
+        mapaModal.on("click", e => elegirPunto(e.latlng));
+      }
+      mapaModal.invalidateSize();
+
+      // Origen, destino y paradas anteriores como referencia
+      capaModal.clearLayers();
+      const puntos = paquete.paradas.map(p => [p.ubicacion.lat, p.ubicacion.lng]);
+      if (paquete.origen) {
+        L.marker([paquete.origen.lat, paquete.origen.lng]).addTo(capaModal)
+          .bindTooltip("Origen", { permanent: true, direction: "top", offset: [-15, -12] });
+      }
+      if (paquete.destino) {
+        L.marker([paquete.destino.lat, paquete.destino.lng]).addTo(capaModal)
+          .bindTooltip("Destino", { permanent: true, direction: "top", offset: [-15, -12] });
+        puntos.push([paquete.destino.lat, paquete.destino.lng]);
+      }
+      paquete.paradas.filter(p => p.parada > 0).forEach(p => {
+        L.circleMarker([p.ubicacion.lat, p.ubicacion.lng], { radius: 6, color: "#1a4fa0", fillOpacity: 0.8 })
+          .addTo(capaModal)
+          .bindTooltip(`Parada ${p.parada}`);
+      });
+      L.polyline(paquete.paradas.map(p => [p.ubicacion.lat, p.ubicacion.lng]), { color: "#1a4fa0" }).addTo(capaModal);
+
+      if (puntos.length > 1) mapaModal.fitBounds(puntos, { padding: [40, 40] });
+      else if (puntos.length === 1) mapaModal.setView(puntos[0], 14);
+      else mapaModal.setView([23.6345, -102.5528], 5);
+    }
+
+    // El punto de la parada es un círculo (no un pin); otro clic lo mueve
+    function elegirPunto(latlng) {
+      puntoNuevo = { lat: latlng.lat, lng: latlng.lng };
+      if (marcaNueva) {
+        marcaNueva.setLatLng(latlng);
+      } else {
+        marcaNueva = L.circleMarker(latlng, { radius: 8, color: "#e67e22", fillColor: "#e67e22", fillOpacity: 0.9 })
+          .addTo(capaModal);
+      }
+      btnGuardarParada.disabled = false;
+    }
+
+    btnGuardarParada.addEventListener("click", async () => {
+      if (!paqueteActual || !puntoNuevo) return;
+      btnGuardarParada.disabled = true;
+      try {
+        await enviarActualizacion(paqueteActual, puntoNuevo, "En tránsito");
+        dialogo.close();
+      } catch (err) {
+        console.error(err);
+        alert(`No se pudo actualizar: ${err.message}`);
+        btnGuardarParada.disabled = false;
+      }
+    });
+
+    btnLlegada.addEventListener("click", async () => {
+      btnLlegada.disabled = true;
+      if (await marcarLlegada(paqueteActual)) dialogo.close();
+      else btnLlegada.disabled = false;
+    });
+
+    document.getElementById("btnCancelar").addEventListener("click", () => dialogo.close());
+    //#endregion
+
+    //#region Botón Modificar de cada fila
+    cuerpo.addEventListener("click", async e => {
+      const boton = e.target.closest(".btnModificar");
+      if (!boton || boton.disabled) return;
+
+      const paquete = leerHistorial()[boton.dataset.id];
+      if (!paquete) return;
+
+      if (connection.state !== signalR.HubConnectionState.Connected) {
+        alert("Sin conexión con el servidor; espera a que diga Conectado.");
+        return;
+      }
+
+      // Opción global: mandar directo al destino sin abrir el mapa
+      if (selectModo.value === "destino" && paquete.destino) {
+        boton.disabled = true;
+        if (!(await marcarLlegada(paquete))) boton.disabled = false;
+      } else {
+        abrirModal(paquete);
+      }
+    });
+    //#endregion
+
+    //#region Opción global guardada en este navegador
+    try {
+      selectModo.value = localStorage.getItem(CLAVE_MODO) ?? "mapa";
+    } catch { }
+    selectModo.addEventListener("change", () => {
+      try { localStorage.setItem(CLAVE_MODO, selectModo.value); } catch { }
+    });
+    //#endregion
+
+    //#region Mensajes del servidor
+    connection.on("PaqueteRegistrado", paquete => {
+      guardarPaquete(paquete);
+      pintarTabla();
+    });
+
+    connection.on("EstadoActualizado", actualizacion => {
+      guardarActualizacion(actualizacion);
+      pintarTabla();
+    });
+    //#endregion
+
+    //#region Eventos
+    // Otra pestaña de este navegador cambió el historial
+    window.addEventListener("storage", e => {
+      if (e.key === CLAVE_HISTORIAL || e.key === null) pintarTabla();
+    });
+
+    document.getElementById("btnBorrar").addEventListener("click", () => {
+      if (!confirm("¿Borrar todo el historial guardado en este navegador?")) return;
+      try { localStorage.removeItem(CLAVE_HISTORIAL); } catch { }
+      pintarTabla();
+    });
+
+    pintarTabla();
+    iniciarConexion();
+    //#endregion
+  </script>
+</body>
+</html>
