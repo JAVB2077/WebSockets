@@ -7,6 +7,9 @@ var builder = WebApplication.CreateBuilder(args);
 // SignalR para los WebSockets
 builder.Services.AddSignalR();
 
+// Paquetes en memoria, compartidos por todas las conexiones
+builder.Services.AddSingleton<AlmacenPaquetes>();
+
 var app = builder.Build();
 
 // Caddy hace de proxy inverso con HTTPS; respetamos sus cabeceras

@@ -11,10 +11,13 @@ public record PaqueteDto(string? Id, Punto Origen, Punto Destino, decimal Precio
 // Cambio de estado de un paquete en una parada
 public record ActualizacionDto(string PaqueteId, int Parada, Punto Ubicacion, string Estado, DateTime? Fecha);
 
-// El hub no guarda nada; solo reenvía los mensajes a todos los clientes
-public class PaqueteHub : Hub
+// El hub guarda los paquetes en el almacén (memoria) y reenvía los cambios a todos los clientes
+public class PaqueteHub(AlmacenPaquetes almacen) : Hub
 {
-    // Asigna Id y fecha, avisa a todos y devuelve el paquete al que lo registró
+    // Historial completo para la página que se acaba de conectar
+    public List<HistorialPaqueteDto> ObtenerPaquetes() => almacen.Todos();
+
+    // Asigna Id y fecha, lo guarda, avisa a todos y devuelve el paquete al que lo registró
     public async Task<PaqueteDto> RegistrarPaquete(PaqueteDto paquete)
     {
         var registrado = paquete with
@@ -23,14 +26,24 @@ public class PaqueteHub : Hub
             Fecha = DateTime.UtcNow
         };
 
+        almacen.Agregar(registrado);
         await Clients.All.SendAsync("PaqueteRegistrado", registrado);
         return registrado;
     }
 
-    // Pone la fecha del servidor y reenvía la actualización a todos
+    // El servidor pone el número de parada y la fecha, lo guarda y lo reenvía a todos
     public async Task ActualizarEstado(ActualizacionDto actualizacion)
     {
-        var conFecha = actualizacion with { Fecha = DateTime.UtcNow };
-        await Clients.All.SendAsync("EstadoActualizado", conFecha);
+        var (nueva, error) = almacen.AgregarParada(actualizacion);
+        if (error is not null) throw new HubException(error);
+
+        await Clients.All.SendAsync("EstadoActualizado", nueva);
+    }
+
+    // Borra todo el historial del servidor y avisa a todos para que limpien su pantalla
+    public async Task ReiniciarHistorial()
+    {
+        almacen.Limpiar();
+        await Clients.All.SendAsync("HistorialReiniciado");
     }
 }
