@@ -59,6 +59,14 @@ connection.on("HistorialReiniciado", () => {
   window.dispatchEvent(new CustomEvent("historial"));
 });
 
+// Al volver a la pestaña (celular bloqueado o en segundo plano) pedimos el historial otra vez,
+// por si se perdió algún aviso mientras estaba dormida
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && connection.state === signalR.HubConnectionState.Connected) {
+    sincronizar();
+  }
+});
+
 connection.onreconnecting(avisarEstado);
 connection.onreconnected(() => {
   avisarEstado();

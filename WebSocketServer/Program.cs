@@ -25,7 +25,12 @@ var archivosCliente = new PhysicalFileProvider(rutaCliente);
 
 // "/" abre index.html y se sirven los archivos del cliente
 app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = archivosCliente });
-app.UseStaticFiles(new StaticFileOptions { FileProvider = archivosCliente });
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = archivosCliente,
+    // El navegador siempre pregunta si hay versión nueva (evita usar JS viejo tras un git pull)
+    OnPrepareResponse = ctx => ctx.Context.Response.Headers.CacheControl = "no-cache"
+});
 
 // Hub de paquetes (WebSocket)
 app.MapHub<PaqueteHub>("/hubs/paquetes");
