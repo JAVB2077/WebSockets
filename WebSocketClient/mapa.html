@@ -152,6 +152,9 @@
     //#endregion
 
     //#region Eventos
+    // Llegó el historial completo del servidor (al conectar o reconectar)
+    window.addEventListener("historial", () => centrar(pintarMapa()));
+
     selectFiltro.addEventListener("change", () => centrar(pintarMapa()));
     document.getElementById("btnCentrar").addEventListener("click", () => centrar(pintarMapa()));
 

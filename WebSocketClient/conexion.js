@@ -37,10 +37,33 @@ async function iniciarConexion() {
     }
   }
   avisarEstado();
+  await sincronizar();
 }
 
+// Pide al servidor todos los paquetes y reemplaza el historial local,
+// así un dispositivo que se conecta tarde ve lo que hicieron los demás.
+// Avisa a la página con el evento "historial" para que redibuje.
+async function sincronizar() {
+  try {
+    const paquetes = await connection.invoke("ObtenerPaquetes");
+    guardarHistorial(Object.fromEntries(paquetes.map(p => [p.id, p])));
+    window.dispatchEvent(new CustomEvent("historial"));
+  } catch (err) {
+    console.error("No se pudo obtener el historial del servidor", err);
+  }
+}
+
+// Alguien reinició el historial: todas las páginas se vacían
+connection.on("HistorialReiniciado", () => {
+  guardarHistorial({});
+  window.dispatchEvent(new CustomEvent("historial"));
+});
+
 connection.onreconnecting(avisarEstado);
-connection.onreconnected(avisarEstado);
+connection.onreconnected(() => {
+  avisarEstado();
+  sincronizar();
+});
 
 // Si se cierra del todo (se agotaron los reintentos automáticos), volvemos a empezar
 connection.onclose(() => {
@@ -50,7 +73,8 @@ connection.onclose(() => {
 //#endregion
 
 //#region Historial en localStorage
-// El servidor no guarda nada: cada navegador guarda su historial aquí.
+// Copia local del historial del servidor: se muestra al recargar mientras conecta
+// y se reemplaza con lo del servidor en cuanto hay conexión (sincronizar).
 // Forma: { "PKG-...": { id, origen, destino, precio, tipoPaquete, fecha,
 //                       paradas: [{ parada, ubicacion, estado, fecha }] } }
 // La parada 0 es el registro en el origen.
@@ -88,7 +112,7 @@ function guardarPaquete(paquete) {
 // Guarda una actualización de estado; si llega dos veces la misma parada, se reemplaza
 function guardarActualizacion(act) {
   const historial = leerHistorial();
-  // Si no conocíamos el paquete (se registró con esta página cerrada) guardamos lo que llega
+  // Por si llega antes de sincronizar: guardamos lo que viene
   const paquete = historial[act.paqueteId] ??= {
     id: act.paqueteId, origen: null, destino: null, precio: null, tipoPaquete: "", fecha: act.fecha, paradas: []
   };

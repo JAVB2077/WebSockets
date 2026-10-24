@@ -29,7 +29,6 @@
     .btnModificar { background: #1a4fa0; color: #fff; border: none; border-radius: 4px; }
     .btnModificar:disabled { background: #ccc; color: #777; }
     #vacio { color: #666; }
-    #btnBorrar { margin-top: 24px; background: none; border: 1px solid #c0392b; color: #c0392b; border-radius: 4px; }
 
     /* Ventana emergente con el mapa */
     dialog { width: min(900px, calc(100vw - 32px)); padding: 16px; border: none; border-radius: 8px; }
@@ -40,6 +39,12 @@
     #btnGuardarParada { background: #1a4fa0; color: #fff; border: none; border-radius: 4px; }
     #btnLlegada { background: #1e8449; color: #fff; border: none; border-radius: 4px; }
     #btnGuardarParada:disabled, #btnLlegada:disabled { background: #999; }
+
+    /* Reiniciar historial */
+    #btnReiniciar { margin-top: 24px; background: none; border: 1px solid #c0392b; color: #c0392b; border-radius: 4px; }
+    dialog.aviso { width: min(420px, calc(100vw - 32px)); }
+    #btnSiReiniciar { background: #c0392b; color: #fff; border: none; border-radius: 4px; }
+    #btnSiReiniciar:disabled { background: #999; }
   </style>
 </head>
 <body>
@@ -74,7 +79,18 @@
   </div>
   <p id="vacio">Aún no hay paquetes. Registra uno en <a href="registro.html">registro.html</a>.</p>
 
-  <button type="button" id="btnBorrar">Borrar historial de este navegador</button>
+  <button type="button" id="btnReiniciar">Reiniciar historial</button>
+
+  <!-- Confirmación antes de borrar todo -->
+  <dialog id="dialogoReiniciar" class="aviso">
+    <h2>¿Reiniciar el historial?</h2>
+    <p>Se borrarán <b>todos los paquetes y sus paradas</b> del servidor, y desaparecerán en
+      <b>todos los dispositivos</b> conectados (registro, estados y mapa). No se puede deshacer.</p>
+    <div class="acciones">
+      <button type="button" id="btnNoReiniciar">Cancelar</button>
+      <button type="button" id="btnSiReiniciar">Sí, borrar todo</button>
+    </div>
+  </dialog>
 
   <dialog id="dialogo">
     <h2 id="tituloModal"></h2>
@@ -170,12 +186,10 @@
     //#endregion
 
     //#region Enviar actualización
-    // La siguiente parada es la última + 1; el servidor la reenvía a todos (incluidos nosotros)
+    // El servidor pone el número de parada y la reenvía a todos (incluidos nosotros)
     async function enviarActualizacion(paquete, ubicacion, estado) {
-      const ultima = paquete.paradas.at(-1);
       await connection.invoke("ActualizarEstado", {
         paqueteId: paquete.id,
-        parada: (ultima?.parada ?? 0) + 1,
         ubicacion,
         estado
       });
@@ -293,6 +307,35 @@
     });
     //#endregion
 
+    //#region Reiniciar historial (con confirmación)
+    const dialogoReiniciar = document.getElementById("dialogoReiniciar");
+    const btnSiReiniciar = document.getElementById("btnSiReiniciar");
+
+    document.getElementById("btnReiniciar").addEventListener("click", () => {
+      if (connection.state !== signalR.HubConnectionState.Connected) {
+        alert("Sin conexión con el servidor; espera a que diga Conectado.");
+        return;
+      }
+      btnSiReiniciar.disabled = false;
+      dialogoReiniciar.showModal();
+    });
+
+    document.getElementById("btnNoReiniciar").addEventListener("click", () => dialogoReiniciar.close());
+
+    // El servidor borra todo y manda "HistorialReiniciado" a todos (conexion.js limpia y redibuja)
+    btnSiReiniciar.addEventListener("click", async () => {
+      btnSiReiniciar.disabled = true;
+      try {
+        await connection.invoke("ReiniciarHistorial");
+        dialogoReiniciar.close();
+      } catch (err) {
+        console.error(err);
+        alert(`No se pudo reiniciar: ${err.message}`);
+        btnSiReiniciar.disabled = false;
+      }
+    });
+    //#endregion
+
     //#region Opción global guardada en este navegador
     try {
       selectModo.value = localStorage.getItem(CLAVE_MODO) ?? "mapa";
@@ -315,15 +358,12 @@
     //#endregion
 
     //#region Eventos
+    // Llegó el historial completo del servidor (al conectar o reconectar)
+    window.addEventListener("historial", pintarTabla);
+
     // Otra pestaña de este navegador cambió el historial
     window.addEventListener("storage", e => {
       if (e.key === CLAVE_HISTORIAL || e.key === null) pintarTabla();
-    });
-
-    document.getElementById("btnBorrar").addEventListener("click", () => {
-      if (!confirm("¿Borrar todo el historial guardado en este navegador?")) return;
-      try { localStorage.removeItem(CLAVE_HISTORIAL); } catch { }
-      pintarTabla();
     });
 
     pintarTabla();
